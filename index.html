@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Scripture Memory Coach</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-blue: #4A90E2;
+            --warm-cream: #FFF8E7;
+            --gold-accent: #F3C623;
+            --text-dark: #2c3e50;
+            --text-light: #f7f7f7;
+            --background: #f4f6f8;
+            --card-bg: #ffffff;
+            --correct: #27ae60;
+            --incorrect: #c0392b;
+            --border-color: #ecf0f1;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body, #root {
+            height: 100%;
+            overscroll-behavior-y: contain;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background);
+            color: var(--text-dark);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        #root {
+            display: flex;
+            justify-content: center;
+        }
+        
+        .app-container {
+            width: 100%;
+            max-width: 450px;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--warm-cream);
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .screen {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 24px;
+            padding-bottom: 90px; /* Space for nav bar */
+        }
+        
+        .screen-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .screen-title {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-dark);
+        }
+        
+        .streak-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background-color: var(--gold-accent);
+            color: var(--text-dark);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 16px;
+        }
+        
+        .button {
+            display: block;
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            text-align: center;
+        }
+        
+        .button-primary {
+            background-color: var(--primary-blue);
+            color: var(--text-light);
+        }
+
+        .button-primary:hover {
+            background-color: #3a7ac2;
+        }
+        .button-primary:disabled {
+            background-color: #a0c3e8;
+            cursor: not-allowed;
+        }
+
+        .button-secondary {
+            background-color: var(--card-bg);
+            color: var(--primary-blue);
+            border: 2px solid var(--primary-blue);
+        }
+
+        .button-secondary:hover {
+            background-color: #e8f1ff;
+        }
+
+        .bottom-nav {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: calc(65px + env(safe-area-inset-bottom));
+            background-color: var(--card-bg);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        .nav-item {
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            color: #7f8c8d;
+            transition: color 0.2s;
+        }
+        .nav-item.active {
+            color: var(--primary-blue);
+        }
+        .nav-item svg {
+            width: 24px;
+            height: 24px;
+        }
+        .nav-item span {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.29.1"
+  }
+}
+</script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+</body>
+</html>
