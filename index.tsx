@@ -1,6 +1,8 @@
+
 import React, { useState, useEffect, useCallback, createContext, useContext, useRef, ReactNode, CSSProperties } from 'react';
 import ReactDOM from 'react-dom/client';
-import { GoogleGenAI } from "@google/genai";
+// FIX: Imported `Type` for defining response schemas for Gemini API calls.
+import { GoogleGenAI, Type } from "@google/genai";
 
 const API_KEY = process.env.API_KEY;
 
@@ -11,7 +13,7 @@ const BIBLE_VERSES = [
   { ref: "Romans 3:23", text: "For all have sinned and fall short of the glory of God.", book: "Romans", themes: ["Gospel", "Core Doctrine"] },
   { ref: "Romans 6:23", text: "For the wages of sin is death, but the free gift of God is eternal life in Christ Jesus our Lord.", book: "Romans", themes: ["Gospel", "Core Doctrine"] },
   { ref: "Ephesians 2:8-9", text: "For by grace you have been saved through faith. And this is not your own doing; it is the gift of God, not a result of works, so that no one may boast.", book: "Ephesians", themes: ["Gospel", "Core Doctrine"] },
-  { ref: "John 14:6", text: "Jesus said to him, “I am the way, and the truth, and the life. No one comes to the Father except through me.”", book: "John", themes: ["Gospel"] },
+  { ref: "John 14:6", text: "Jesus said to him, “I am the way, and the aletheia, and the zoe. No one comes to the Father except through me.”", book: "John", themes: ["Gospel"] },
   { ref: "Romans 5:8", text: "But God shows his love for us in that while we were still sinners, Christ died for us.", book: "Romans", themes: ["Gospel", "Love"] },
   { ref: "1 John 1:9", text: "If we confess our sins, he is faithful and just to forgive us our sins and to cleanse us from all unrighteousness.", book: "1 John", themes: ["Gospel"] },
   { ref: "Acts 4:12", text: "And there is salvation in no one else, for there is no other name under heaven given among men by which we must be saved.", book: "Acts", themes: ["Gospel"] },
@@ -65,27 +67,41 @@ const BIBLE_VERSES = [
 type Verse = typeof BIBLE_VERSES[0];
 
 const THEME_PACKS = [
-    { id: "peace", title: "🕊️ Peace", verses: BIBLE_VERSES.filter(v => v.themes.includes("Peace")).map(v => v.ref), isPro: false },
+    { id: "gospel", title: "📖 The Gospel", verses: BIBLE_VERSES.filter(v => v.themes.includes("Gospel")).map(v => v.ref), isPro: false },
+    { id: "peace", title: "🕊️ Finding Peace", verses: BIBLE_VERSES.filter(v => v.themes.includes("Peace")).map(v => v.ref), isPro: false },
+    { id: "love", title: "❤️ On Love", verses: BIBLE_VERSES.filter(v => v.themes.includes("Love")).map(v => v.ref), isPro: true },
+    { id: "encouragement", title: "💪 Encouragement", verses: BIBLE_VERSES.filter(v => v.themes.includes("Encouragement")).map(v => v.ref), isPro: true },
     { id: "armor", title: "⚔️ Armor of God", verses: ["Ephesians 6:11", "Ephesians 6:13", "Ephesians 6:14", "Ephesians 6:16", "Ephesians 6:17"], isPro: true },
-    { id: "love", title: "❤️ Love", verses: BIBLE_VERSES.filter(v => v.themes.includes("Love")).map(v => v.ref), isPro: true },
-    { id: "gospel", title: "🔵 Beginner Gospel", verses: BIBLE_VERSES.filter(v => v.themes.includes("Gospel")).map(v => v.ref), isPro: true }
+    { id: "psalms", title: "🎶 Psalms of Praise", verses: BIBLE_VERSES.filter(v => v.themes.includes("Psalms")).map(v => v.ref), isPro: true }
 ];
 
-const REWARDS = {
+const REWARDS: Record<number, {id: string; title: string; description: string; content: RewardContent}> = {
     7: { id: "faithful", title: "Faithful Learner", description: "Unlock a 1-page devotional", content: {type: 'pdf', title: "The Power of Hidden Word", text: "Colossians 3:16 says, 'Let the word of Christ dwell in you richly...' This isn't just about reading, but about making God's Word a part of who you are. When you memorize Scripture, you're not just storing information; you're planting seeds of truth, hope, and strength in your heart. This 'hidden word' becomes an anchor in storms, a light in darkness, and a constant source of wisdom. It shapes your thoughts, guides your decisions, and comforts your soul. Your 7-day streak shows faithfulness. You are building a treasure that moths and rust cannot destroy. Keep hiding His Word in your heart, and you will find it living and active in every area of your life."} },
     14: { id: "disciplined", title: "Disciplined Disciple", description: "Unlock a guided audio prayer", content: {type: 'audio', title: "A Prayer for a Hearing Heart"} },
     30: { id: "master", title: "Memory Master", description: "Unlock a custom verse wallpaper", content: {type: 'wallpaper', title: "Your Custom Wallpaper"} }
 };
 
+// FIX: Added a specific type for reward content to improve type safety and fix inference issues.
+interface RewardContent {
+    type: 'pdf' | 'audio' | 'wallpaper';
+    title: string;
+    text?: string;
+}
 
 // --- CONTEXT & STATE MANAGEMENT ---
-// FIX: Add type definitions for app state and context to resolve multiple typing errors
-// regarding 'unknown' types and missing properties.
 interface VerseProgress {
-    attempts: number;
-    correct: number;
     mastered: boolean;
     favorite: boolean;
+    level: number; // SRS level
+    nextReviewDate: string | null; // ISO Date string yyyy-mm-dd
+    lastReviewedDate: string | null; // ISO Date string yyyy-mm-dd
+    masteredDate?: string; // ISO Date string yyyy-mm-dd
+}
+
+interface PracticeRecord {
+    date: string; // ISO Date string yyyy-mm-dd
+    verseRef: string;
+    score: number;
 }
 
 interface AppState {
@@ -93,39 +109,59 @@ interface AppState {
     streak: number;
     longestStreak: number;
     lastPracticeDate: string | null;
-    settings: { translation: string; reminderTime: string; };
+    settings: {
+        translation: string;
+        reminderTime: string;
+        darkMode: boolean;
+    };
     isPro: boolean;
     sessionsToday: number;
     lastSessionDate: string | null;
+    practiceHistory: PracticeRecord[];
+    isAuthenticated: boolean;
+    user: { name: string } | null;
 }
 
 interface AppContextType {
     state: AppState;
     setState: React.Dispatch<React.SetStateAction<AppState>>;
-    updateProgress: (verseRef: string, isCorrect: boolean) => void;
+    updateProgress: (verseRef: string, result: {isCorrect: boolean, score: number}) => void;
     updateStreak: () => void;
     checkSessionLimit: () => boolean;
     incrementSession: () => void;
+    login: (email: string, pass: string) => boolean;
+    signup: (name: string, email: string, pass: string) => boolean;
+    logout: () => void;
+    continueAsGuest: () => void;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
 
-const AppProvider = ({ children }: { children: ReactNode }) => {
+const AppProvider = ({ children }: { children?: ReactNode }) => {
     const [state, setState] = useState<AppState>(() => {
         const savedState = localStorage.getItem('smc_state');
+        const currentUser = localStorage.getItem('smc_currentUser');
         const defaultState: AppState = {
-            progress: {}, // { "John 3:16": { attempts: 0, correct: 0, mastered: false, favorite: false } }
+            progress: {},
             streak: 0,
             longestStreak: 0,
             lastPracticeDate: null,
-            settings: { translation: "KJV", reminderTime: "07:00" },
+            settings: { translation: "KJV", reminderTime: "07:00", darkMode: false },
             isPro: false,
             sessionsToday: 0,
-            lastSessionDate: null
+            lastSessionDate: null,
+            practiceHistory: [],
+            isAuthenticated: !!currentUser,
+            user: currentUser ? JSON.parse(currentUser) : null,
         };
         try {
             if (savedState) {
-                return { ...defaultState, ...JSON.parse(savedState) };
+                const parsed = JSON.parse(savedState);
+                parsed.settings = { ...defaultState.settings, ...parsed.settings };
+                if (parsed.settings?.darkMode) {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                }
+                return { ...defaultState, ...parsed };
             }
             return defaultState;
         } catch {
@@ -134,25 +170,51 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
     });
 
     useEffect(() => {
-        localStorage.setItem('smc_state', JSON.stringify(state));
+        const stateToSave = { ...state };
+        // Don't persist auth state in the main settings blob
+        delete (stateToSave as Partial<AppState>).isAuthenticated;
+        delete (stateToSave as Partial<AppState>).user;
+        localStorage.setItem('smc_state', JSON.stringify(stateToSave));
+        document.documentElement.setAttribute('data-theme', state.settings.darkMode ? 'dark' : 'light');
     }, [state]);
 
-    const updateProgress = (verseRef: string, isCorrect: boolean) => {
+    const SRS_INTERVALS_DAYS = [1, 3, 7, 14, 30, 60, 120, 240, 365];
+
+    const updateProgress = (verseRef: string, result: {isCorrect: boolean, score: number}) => {
         setState(s => {
-            const verseProgress = s.progress[verseRef] || { attempts: 0, correct: 0, mastered: false, favorite: false };
-            const newAttempts = verseProgress.attempts + 1;
-            const newCorrect = verseProgress.correct + (isCorrect ? 1 : 0);
-            const accuracy = newCorrect / newAttempts;
+            const verseProgress = s.progress[verseRef] || { level: 0, mastered: false, favorite: false, nextReviewDate: null, lastReviewedDate: null };
+            const { isCorrect, score } = result;
             
+            let newLevel = verseProgress.level;
+            if (isCorrect) {
+                newLevel = Math.min(newLevel + 1, SRS_INTERVALS_DAYS.length - 1);
+            } else {
+                newLevel = Math.max(0, newLevel - 2); 
+            }
+
+            const today = new Date();
+            const todayStr = today.toISOString().split('T')[0];
+            const nextReviewDate = new Date(today);
+            const interval = SRS_INTERVALS_DAYS[newLevel];
+            nextReviewDate.setDate(today.getDate() + interval);
+            
+            const isNowMastered = newLevel >= 5;
+            const wasAlreadyMastered = verseProgress.mastered;
+
+            const newHistory: PracticeRecord[] = [...(s.practiceHistory || []), { date: todayStr, verseRef, score }];
+
             return {
                 ...s,
+                practiceHistory: newHistory,
                 progress: {
                     ...s.progress,
                     [verseRef]: {
                         ...verseProgress,
-                        attempts: newAttempts,
-                        correct: newCorrect,
-                        mastered: accuracy >= 0.9 && newAttempts >= 3,
+                        level: newLevel,
+                        lastReviewedDate: todayStr,
+                        nextReviewDate: nextReviewDate.toISOString().split('T')[0],
+                        mastered: isNowMastered,
+                        masteredDate: isNowMastered && !wasAlreadyMastered ? todayStr : verseProgress.masteredDate
                     }
                 }
             };
@@ -198,7 +260,46 @@ const AppProvider = ({ children }: { children: ReactNode }) => {
         }));
     }
 
-    const value: AppContextType = { state, setState, updateProgress, updateStreak, checkSessionLimit, incrementSession };
+    const login = (email: string, pass: string): boolean => {
+        const users = JSON.parse(localStorage.getItem('smc_users') || '[]');
+        const user = users.find((u: any) => u.email === email && u.pass === pass); // Simplified auth
+        if (user) {
+            const userData = { name: user.name };
+            localStorage.setItem('smc_currentUser', JSON.stringify(userData));
+            setState(s => ({ ...s, isAuthenticated: true, user: userData }));
+            return true;
+        }
+        return false;
+    };
+
+    const signup = (name: string, email: string, pass: string): boolean => {
+        const users = JSON.parse(localStorage.getItem('smc_users') || '[]');
+        if (users.some((u: any) => u.email === email)) {
+            alert("An account with this email already exists.");
+            return false;
+        }
+        const newUser = { name, email, pass }; // In a real app, hash the pass
+        users.push(newUser);
+        localStorage.setItem('smc_users', JSON.stringify(users));
+        
+        const userData = { name: newUser.name };
+        localStorage.setItem('smc_currentUser', JSON.stringify(userData));
+        setState(s => ({ ...s, isAuthenticated: true, user: userData }));
+        return true;
+    };
+
+    const logout = () => {
+        localStorage.removeItem('smc_currentUser');
+        setState(s => ({ ...s, isAuthenticated: false, user: null }));
+    };
+    
+    const continueAsGuest = () => {
+        const userData = { name: 'Guest' };
+        localStorage.setItem('smc_currentUser', JSON.stringify(userData));
+        setState(s => ({ ...s, isAuthenticated: true, user: userData }));
+    };
+
+    const value: AppContextType = { state, setState, updateProgress, updateStreak, checkSessionLimit, incrementSession, login, signup, logout, continueAsGuest };
 
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
@@ -208,7 +309,6 @@ const useApp = () => useContext(AppContext) as AppContextType;
 
 // --- AI SERVICE ---
 class AIService {
-    // FIX: Declare class property 'ai' to resolve 'does not exist on type' errors.
     private ai: GoogleGenAI | null;
 
     constructor(apiKey: string | undefined) {
@@ -231,15 +331,30 @@ class AIService {
         }
     }
 
-    async gradeAnswer(verseText: string, quizText: string, userInput: string) {
+    async gradeAnswer(verseText: string, quizText: string, userInput: string, mode: 'fill-in-the-blank' | 'first-letter') {
         if (!this.ai) return { score: userInput ? 100 : 0, isCorrect: !!userInput, feedback: "Keep hiding God's Word in your heart!" };
         
-        const prompt = `You are an AI Bible quiz grader. The full verse is: "${verseText}". The user was shown this text with blanks: "${quizText}". The user typed the following words to fill the blanks: "${userInput}". Grade the user's accuracy from 0 to 100. A perfect score is 100. Deduct points for incorrect words. Accept close spelling or reasonable synonyms. Also, provide a short, warm, biblical-tone encouragement message based on their performance. Respond ONLY with a valid JSON object in the format: { "score": number, "isCorrect": boolean, "feedback": "Your encouraging message here." }`;
-        
+        const prompt = mode === 'fill-in-the-blank' 
+            ? `You are an AI Bible quiz grader. The full verse is: "${verseText}". The user was shown this text with blanks: "${quizText}". The user typed the following words to fill the blanks: "${userInput}". Grade the user's accuracy from 0 to 100. A perfect score is 100. Deduct points for incorrect words. Accept close spelling or reasonable synonyms. Also, provide a short, warm, biblical-tone encouragement message based on their performance. Respond ONLY with a valid JSON object in the format: { "score": number, "isCorrect": boolean, "feedback": "Your encouraging message here." }`
+            : `You are an AI Bible quiz grader. The full verse is: "${verseText}". The user was shown only the first letter of each word and typed the following: "${userInput}". Grade the user's accuracy from 0 to 100 based on how closely their input matches the full verse. A perfect score is 100. Minor typos or punctuation errors should only have small deductions. Also, provide a short, warm, biblical-tone encouragement message based on their performance. Respond ONLY with a valid JSON object in the format: { "score": number, "isCorrect": boolean, "feedback": "Your encouraging message here." }`;
+
         try {
+            // FIX: Added responseMimeType and responseSchema to ensure a valid JSON response.
             const response = await this.ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            score: { type: Type.NUMBER },
+                            isCorrect: { type: Type.BOOLEAN },
+                            feedback: { type: Type.STRING },
+                        },
+                        required: ["score", "isCorrect", "feedback"],
+                    },
+                }
             });
             const resultText = response.text;
             const parsed = await this.parseJsonResponse(resultText);
@@ -254,20 +369,64 @@ class AIService {
     async generateMnemonic(verseText: string) {
         if (!this.ai) return { mnemonic: "Remember to focus on the key ideas of the verse." };
         
-        const prompt = `You are an AI memory aid. Create a simple, powerful mnemonic for the Bible verse: "${verseText}". It can be an acronym or a short visual hook. Keep it under 15 words. For example, for "John 3:16", you could generate "GSL = Gift, Sacrifice, Love". Respond ONLY with a valid JSON object in the format: { "mnemonic": "Your mnemonic here." }`;
+        const prompt = `You are an AI memory aid. Create 3 distinct mnemonic options for the Bible verse: "${verseText}". Options can include acronyms, visual stories, or keyword associations. Keep each under 15 words. For example, for "John 3:16", you could generate options like "GSL: God's Son is Life" or "Picture a loving God giving the world a gift." Respond ONLY with a valid JSON object in the format: { "mnemonics": ["Option 1", "Option 2", "Option 3"] }`;
 
         try {
             const response = await this.ai.models.generateContent({
                 model: 'gemini-2.5-flash',
                 contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            mnemonics: {
+                                type: Type.ARRAY,
+                                items: { type: Type.STRING }
+                            },
+                        },
+                        required: ["mnemonics"],
+                    },
+                }
+            });
+            const resultText = response.text;
+            const parsed = await this.parseJsonResponse(resultText);
+            if (parsed && parsed.mnemonics && parsed.mnemonics.length > 0) return parsed;
+            throw new Error("Parsed response is invalid or empty");
+        } catch (error) {
+            console.error("Error generating mnemonics:", error);
+            return { mnemonics: ["Focus on the key ideas of the verse."] };
+        }
+    }
+    
+    async explainVerse(verseRef: string, verseText: string) {
+        if (!this.ai) return { explanation: "AI features are disabled. Please check your API key." };
+        
+        const prompt = `You are a helpful Bible assistant. Explain the verse "${verseRef}: ${verseText}" in simple, clear terms, suitable for someone new to the Bible. Focus on the core message and its application. Keep it under 100 words. Respond ONLY with a valid JSON object in the format: { "explanation": "Your explanation here." }`;
+
+        try {
+            // FIX: Added responseMimeType and responseSchema to ensure a valid JSON response.
+            const response = await this.ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            explanation: { type: Type.STRING },
+                        },
+                        required: ["explanation"],
+                    },
+                }
             });
             const resultText = response.text;
             const parsed = await this.parseJsonResponse(resultText);
             if(parsed) return parsed;
             throw new Error("Parsed response is null");
         } catch (error) {
-            console.error("Error generating mnemonic:", error);
-            return { mnemonic: "Remember to focus on the key ideas of the verse." };
+            console.error("Error generating explanation:", error);
+            return { explanation: "Sorry, I had trouble generating an explanation. Please try again." };
         }
     }
 }
@@ -284,35 +443,29 @@ const StreakBadge = () => {
     );
 };
 
-const BottomNav = ({ currentPage, setPage }: { currentPage: string, setPage: (page: string) => void }) => {
-    const navItems = ["Home", "Themes", "Progress", "Settings"];
-    const icons = {
-        Home: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>,
-        Themes: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>,
-        Progress: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>,
-        Settings: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-    };
-
+const ProgressBar = ({ value, max, label }: { value: number; max: number; label: string }) => {
+    const percentage = max > 0 ? (value / max) * 100 : 0;
     return (
-        <nav className="bottom-nav">
-            {navItems.map(item => (
-                <div key={item} className={`nav-item ${currentPage.toLowerCase() === item.toLowerCase() ? 'active' : ''}`} onClick={() => setPage(item)}>
-                    {icons[item as keyof typeof icons]}
-                    <span>{item}</span>
-                </div>
-            ))}
-        </nav>
+        <div style={styles.progressBarContainer}>
+            <div style={styles.progressBarLabel}>
+                <span>{label}</span>
+                <span>{value} / {max}</span>
+            </div>
+            <div style={styles.progressBarTrack}>
+                <div style={{ ...styles.progressBarFill, width: `${percentage}%` }} />
+            </div>
+        </div>
     );
 };
 
-const Modal = ({ show, onClose, title, children }: { show: boolean, onClose: () => void, title: ReactNode, children: ReactNode }) => {
+const Modal = ({ show, onClose, title, children }: { show: boolean, onClose: () => void, title: string, children?: ReactNode }) => {
     if (!show) return null;
     return (
         <div style={styles.modalOverlay} onClick={onClose}>
-            <div style={styles.modalContent} className="fade-in" onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
                 <div style={styles.modalHeader}>
-                    <h3 style={{margin: 0}}>{title}</h3>
-                    <button onClick={onClose} style={styles.modalCloseButton}>&times;</button>
+                    <h3 style={styles.modalTitle}>{title}</h3>
+                    <button style={styles.modalCloseButton} onClick={onClose}>&times;</button>
                 </div>
                 <div style={styles.modalBody}>
                     {children}
@@ -322,253 +475,362 @@ const Modal = ({ show, onClose, title, children }: { show: boolean, onClose: () 
     );
 };
 
-// --- SCREENS ---
-const HomeScreen = ({ setPage, setVerse }: { setPage: (page: string) => void, setVerse: (verse: Verse) => void }) => {
-    const { state, checkSessionLimit, incrementSession } = useApp();
-    const masteredCount = Object.values(state.progress).filter(p => p.mastered).length;
-
-    const handleStart = () => {
-        if (!checkSessionLimit()) {
-            alert("You've reached your daily limit of 3 free sessions. Upgrade to Pro for unlimited practice!");
-            setPage('Settings');
-            return;
-        }
-        incrementSession();
-        // Verse of the Day logic: pick one that's not mastered, or a random one
-        const unmastered = BIBLE_VERSES.filter(v => !state.progress[v.ref]?.mastered);
-        const verseToPractice = unmastered.length > 0 ? unmastered[Math.floor(Math.random() * unmastered.length)] : BIBLE_VERSES[Math.floor(Math.random() * BIBLE_VERSES.length)];
-        setVerse(verseToPractice);
-        setPage('Practice');
-    }
-
+const Icon = ({ name }: { name: string }) => {
+    const icons: Record<string, ReactNode> = {
+        home: <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>,
+        practice: <path d="M14.06 9.02l.92.92L5.92 19H5v-.92l9.06-9.06M17.66 3c-.25 0-.51.1-.7.29l-1.83 1.83 3.75 3.75 1.83-1.83c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.2-.2-.45-.29-.71-.29zm-3.6 3.19L3 17.25V21h3.75L17.81 9.94l-3.75-3.75z"/>,
+        progress: <path d="M4 11h16v2H4zm0-4h16v2H4zm0 8h16v2H4z"/>,
+        stats: <path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/>,
+        settings: <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49.42l.38-2.65c.61-.25 1.17-.59-1.69.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/>,
+    };
     return (
-        <div className="screen fade-in" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-            <div>
-                <div className="screen-header">
-                    <h1 className="screen-title" style={{ fontSize: '24px' }}>Scripture Memory Coach</h1>
-                    <StreakBadge />
-                </div>
-                <p style={{ textAlign: 'center', marginBottom: '40px', fontSize: '16px', color: '#7f8c8d' }}>Memorize God’s Word in 5 minutes a day.</p>
-            </div>
-            
-            <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: '20px' }}>
-                <button onClick={handleStart} className="button button-primary" style={{ padding: '20px', fontSize: '22px', borderRadius: '16px' }}>
-                    Start Practicing
-                </button>
-            </div>
+        <svg xmlns="http://www.w3.org/2000/svg" height="24" viewBox="0 0 24 24" width="24" fill="currentColor">
+            {icons[name] || <circle cx="12" cy="12" r="10"/>}
+        </svg>
+    );
+};
 
-            <div style={{ display: 'flex', justifyContent: 'space-around', textAlign: 'center', padding: '20px 0' }}>
-                <div>
-                    <div style={{ fontSize: '24px', fontWeight: '700' }}>{masteredCount}</div>
-                    <div style={{ fontSize: '14px', color: '#7f8c8d' }}>Verses Mastered</div>
-                </div>
-                <div>
-                    <div style={{ fontSize: '24px', fontWeight: '700' }}>{state.streak}</div>
-                    <div style={{ fontSize: '14px', color: '#7f8c8d' }}>Current Streak</div>
+
+// --- AUTH SCREENS ---
+const AuthScreen = () => {
+    const [mode, setMode] = useState<'welcome' | 'login' | 'signup'>('welcome');
+    
+    switch(mode) {
+        case 'login':
+            return <LoginScreen onSwitchMode={() => setMode('signup')} />;
+        case 'signup':
+            return <SignUpScreen onSwitchMode={() => setMode('login')} />;
+        default:
+            return <WelcomeScreen onSetMode={setMode} />;
+    }
+};
+
+const WelcomeScreen = ({ onSetMode }: { onSetMode: (mode: 'login' | 'signup') => void }) => {
+    const { continueAsGuest } = useApp();
+    return (
+        <div className="screen" style={styles.authContainer}>
+            <div style={styles.authContent}>
+                <h1 style={styles.welcomeTitle}>Dwell</h1>
+                <p style={styles.welcomeSubtitle}>Hide His Word in Your Heart.</p>
+                <div style={{width: '100%', display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '40px'}}>
+                    <button className="button button-primary" onClick={() => onSetMode('signup')}>Create Account</button>
+                    <button className="button button-secondary" onClick={() => onSetMode('login')}>Sign In</button>
+                    <button style={styles.guestButton} onClick={continueAsGuest}>Continue as Guest</button>
                 </div>
             </div>
         </div>
     );
 };
 
-const PracticeScreen = ({ verse, setPage, setVerse }: { verse: Verse, setPage: (page: string) => void, setVerse: (verse: Verse) => void }) => {
-    const { state, updateProgress, updateStreak, incrementSession, checkSessionLimit } = useApp();
-    const [quiz, setQuiz] = useState<{ text: string, correctWords: string[] } | null>(null);
-    const [userInput, setUserInput] = useState('');
-    const [result, setResult] = useState<{ score: number; isCorrect: boolean; feedback: string; } | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [mnemonic, setMnemonic] = useState<string | null>(null);
-    const chatEndRef = useRef<HTMLDivElement>(null);
+const LoginScreen = ({ onSwitchMode }: { onSwitchMode: () => void }) => {
+    const { login } = useApp();
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
 
-    const generateQuiz = useCallback(() => {
-        const words = verse.text.replace(/[.,;:“”?]/g, '').split(' ');
-        const eligibleIndices = words.map((w, i) => w.length > 3 ? i : -1).filter(i => i !== -1);
-        const indicesToBlank: number[] = [];
-        const numBlanks = Math.min(Math.floor(words.length / 5) + 1, 4, eligibleIndices.length);
-
-        while (indicesToBlank.length < numBlanks && eligibleIndices.length > 0) {
-            const randIndex = Math.floor(Math.random() * eligibleIndices.length);
-            const wordIndex = eligibleIndices.splice(randIndex, 1)[0];
-            indicesToBlank.push(wordIndex);
-        }
-        
-        const correctWords: string[] = [];
-        indicesToBlank.sort((a,b) => a-b).forEach(i => correctWords.push(words[i]));
-        
-        let quizText = verse.text;
-        correctWords.forEach(word => {
-            quizText = quizText.replace(new RegExp(`\\b${word}\\b`), '______');
-        });
-
-        setQuiz({ text: quizText, correctWords });
-    }, [verse]);
-
-    useEffect(() => {
-        generateQuiz();
-        setResult(null);
-        setUserInput('');
-        setMnemonic(null);
-    }, [verse, generateQuiz]);
-    
-    useEffect(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [result]);
-
-    const handlePlayAudio = () => {
-        if ('speechSynthesis' in window) {
-            window.speechSynthesis.cancel(); // Cancel any previous speech
-            const utterance = new SpeechSynthesisUtterance(`${verse.ref}. ${verse.text}`);
-            window.speechSynthesis.speak(utterance);
-        } else {
-            alert("Sorry, your browser doesn't support text-to-speech.");
-        }
-    };
-
-    const handleSubmit = async (e: React.FormEvent) => {
+    const handleLogin = (e: React.FormEvent) => {
         e.preventDefault();
-        if (!userInput.trim() || isLoading || !quiz) return;
-
-        setIsLoading(true);
-        const aiResult = await aiService.gradeAnswer(verse.text, quiz.text, userInput);
-        
-        if (aiResult) {
-            setResult(aiResult);
-            updateProgress(verse.ref, aiResult.isCorrect);
-            if(aiResult.isCorrect){
-                updateStreak();
-            } else {
-                const mnem = await aiService.generateMnemonic(verse.text);
-                if(mnem) setMnemonic(mnem.mnemonic);
-            }
+        if (!login(email, password)) {
+            alert('Invalid email or password.');
         }
-        setIsLoading(false);
-        setUserInput('');
     };
     
-    const handleTryAgain = () => {
-        generateQuiz();
-        setResult(null);
-        setUserInput('');
-        setMnemonic(null);
-    }
-
-    const handleNextVerse = () => {
-        if (!checkSessionLimit()) {
-            alert("You've reached your daily limit of 3 free sessions. Upgrade to Pro for unlimited practice!");
-            setPage('Home');
-            return;
-        }
-        incrementSession();
-        const unmastered = BIBLE_VERSES.filter(v => !state.progress[v.ref]?.mastered && v.ref !== verse.ref);
-        const verseToPractice = unmastered.length > 0 ? unmastered[Math.floor(Math.random() * unmastered.length)] : BIBLE_VERSES[Math.floor(Math.random() * BIBLE_VERSES.length)];
-        setVerse(verseToPractice);
-    }
-    
-    if (!quiz) return <div>Loading...</div>;
-
     return (
-        <div className="screen fade-in" style={{display: 'flex', flexDirection: 'column', height: '100%'}}>
-            <div style={styles.practiceVerseCard}>
-                <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>{verse.ref}</h2>
-                <button onClick={handlePlayAudio} style={styles.audioButton}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
-                    <span style={{marginLeft: '8px'}}>Play Audio</span>
-                </button>
-            </div>
-            
-            <div style={{flexGrow: 1, overflowY: 'auto', padding: '10px 0'}}>
-                <div style={styles.chatBubbleUser}>
-                    <p style={{fontSize: '18px', lineHeight: 1.6}}>{quiz.text.split(' ').map((word, i) => word.includes('______') ? <strong key={i} style={{color: 'var(--primary-blue)'}}>{word} </strong> : `${word} `)}</p>
-                </div>
-                
-                {result && (
-                    <div style={styles.chatBubbleAI(result.isCorrect)} className="fade-in">
-                        <p><strong>{result.isCorrect ? "✅ Correct!" : "❌ Let's review:"}</strong> {result.feedback}</p>
-                        {!result.isCorrect && <p style={{marginTop: '10px', opacity: 0.9, fontSize: '14px'}}>The correct words were: <strong>{quiz.correctWords.join(', ')}</strong></p>}
-                        {mnemonic && <p style={{marginTop: '10px', borderTop: '1px solid rgba(0,0,0,0.1)', paddingTop: '10px'}}><strong>Memory Hook:</strong> {mnemonic}</p>}
-                    </div>
-                )}
-                <div ref={chatEndRef} />
-            </div>
-
-            { !result ? (
-                <form onSubmit={handleSubmit} style={styles.inputArea}>
-                    <input 
-                        type="text" 
-                        value={userInput} 
-                        onChange={(e) => setUserInput(e.target.value)}
-                        placeholder="Type the missing word(s)..."
-                        style={styles.chatInput}
-                        disabled={isLoading}
-                        autoFocus
-                    />
-                    <button type="submit" className="button-primary" style={styles.sendButton} disabled={isLoading || !userInput.trim()}>
-                        {isLoading ? '...' : <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>}
-                    </button>
+        <div className="screen fade-in" style={styles.authContainer}>
+            <div style={styles.authContent}>
+                <h2 style={styles.authTitle}>Sign In</h2>
+                <form onSubmit={handleLogin} style={styles.authForm}>
+                    <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" style={styles.authInput} required />
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" style={styles.authInput} required />
+                    <button type="submit" className="button button-primary">Sign In</button>
                 </form>
-            ) : (
-                result.isCorrect ? (
-                    <div style={{padding: '10px 0', display: 'flex', gap: '10px'}} className="fade-in">
-                        <button onClick={() => setPage('Home')} className="button button-secondary" style={{flex: 1}}>Done</button>
-                        <button onClick={handleNextVerse} className="button button-primary" style={{flex: 1}}>Next Verse</button>
-                    </div>
-                ) : (
-                    <div style={{padding: '10px 0', display: 'flex', gap: '10px'}} className="fade-in">
-                        <button onClick={handleTryAgain} className="button button-secondary" style={{flex: 1}}>Try Again</button>
-                        <button onClick={handleNextVerse} className="button button-primary" style={{flex: 1}}>Next Verse</button>
-                    </div>
-                )
-            )}
+                <p style={styles.authSwitchText}>
+                    Don't have an account? <span onClick={onSwitchMode} style={styles.authSwitchLink}>Sign Up</span>
+                </p>
+            </div>
         </div>
     );
 };
 
-const ThemesScreen = () => {
-    const { state } = useApp();
+const SignUpScreen = ({ onSwitchMode }: { onSwitchMode: () => void }) => {
+    const { signup } = useApp();
+    const [name, setName] = useState('');
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
 
-    const handleStartTheme = (pack: typeof THEME_PACKS[0]) => {
-        if (pack.isPro && !state.isPro) {
-            // In a real app, this would show the upgrade modal
-            alert("This is a Pro feature. Please upgrade on the Settings page.");
+    const handleSignup = (e: React.FormEvent) => {
+        e.preventDefault();
+        signup(name, email, password);
+    };
+    
+    return (
+        <div className="screen fade-in" style={styles.authContainer}>
+            <div style={styles.authContent}>
+                <h2 style={styles.authTitle}>Create Account</h2>
+                <form onSubmit={handleSignup} style={styles.authForm}>
+                    <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Name" style={styles.authInput} required />
+                    <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="Email" style={styles.authInput} required />
+                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Password" style={styles.authInput} required />
+                    <button type="submit" className="button button-primary">Create Account</button>
+                </form>
+                 <p style={styles.authSwitchText}>
+                    Already have an account? <span onClick={onSwitchMode} style={styles.authSwitchLink}>Sign In</span>
+                </p>
+            </div>
+        </div>
+    );
+};
+
+
+// --- SCREENS ---
+const HomeScreen = ({ onNavigate }: { onNavigate: (screen: string, params?: any) => void }) => {
+    const { state, checkSessionLimit, incrementSession } = useApp();
+
+    const handleStartPractice = () => {
+        if (checkSessionLimit()) {
+            incrementSession();
+            onNavigate('practice');
+        } else {
+            alert("You've reached your session limit for today. Upgrade to Pro for unlimited practice!");
+        }
+    };
+    
+    const handleStartTheme = (packId: string, isPro: boolean) => {
+        if (isPro && !state.isPro) {
+            alert("This is a Pro feature. Upgrade to unlock all theme packs!");
             return;
         }
-        // In a real app, this would start a session with verses from this theme.
-        alert(`Starting theme: ${pack.title}`);
-    }
-
+        if (checkSessionLimit()) {
+            incrementSession();
+            onNavigate('practice', { packId });
+        } else {
+            alert("You've reached your session limit for today. Upgrade to Pro for unlimited practice!");
+        }
+    };
+    
     return (
         <div className="screen fade-in">
             <div className="screen-header">
-                <h1 className="screen-title">Themes</h1>
+                <h1 className="screen-title">Welcome, {state.user?.name || 'Friend'}!</h1>
+                <StreakBadge />
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {THEME_PACKS.map(pack => {
-                    const progressCount = pack.verses.filter(ref => state.progress[ref]?.mastered).length;
-                    const isLocked = pack.isPro && !state.isPro;
-                    return (
-                        <div key={pack.id} style={styles.themeCard(isLocked)} onClick={() => handleStartTheme(pack)}>
-                            <div style={{flex: 1}}>
-                                <h3 style={{fontSize: '20px', marginBottom: '8px'}}>{pack.title}</h3>
-                                <p style={{fontSize: '14px', color: '#7f8c8d'}}>{pack.verses.length} Verses</p>
-                                {!isLocked && (
-                                  <div style={styles.progressBarContainer}>
-                                      <div style={styles.progressBar(progressCount / pack.verses.length)}></div>
-                                  </div>
-                                )}
-                            </div>
-                            <button style={styles.themeButton(isLocked)}>
-                                {isLocked ? '⭐ Pro' : 'Start'}
-                            </button>
+
+            <div style={{ marginBottom: '24px' }}>
+                <button className="button button-primary" onClick={handleStartPractice}>
+                    Start Daily Practice
+                </button>
+            </div>
+            
+            <h2 style={{ fontSize: '20px', fontWeight: 600, marginBottom: '16px' }}>Theme Packs</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {THEME_PACKS.map(pack => (
+                    <div key={pack.id} style={styles.themePackCard} onClick={() => handleStartTheme(pack.id, pack.isPro)}>
+                        <span style={{ fontSize: '24px', marginRight: '16px' }}>{pack.title.split(' ')[0]}</span>
+                        <div style={{ flexGrow: 1 }}>
+                            <div style={styles.themePackTitle}>{pack.title.substring(pack.title.indexOf(' ') + 1)}</div>
+                            <div style={styles.themePackVerseCount}>{pack.verses.length} verses</div>
                         </div>
-                    );
-                })}
-                 <div style={styles.themeCard(true)}>
-                    <div style={{flex: 1}}>
-                        <h3 style={{fontSize: '20px', marginBottom: '8px'}}>⭐ Create Custom Pack</h3>
-                        <p style={{fontSize: '14px', color: '#7f8c8d'}}>Add your own verses</p>
+                        {pack.isPro && !state.isPro && <span style={styles.proBadge}>PRO</span>}
                     </div>
-                     <button style={styles.themeButton(true)}>Unlock</button>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+
+const PracticeScreen = ({ onNavigate, packId }: { onNavigate: (screen: string) => void; packId?: string }) => {
+    const { state, updateProgress, updateStreak } = useApp();
+    const [verse, setVerse] = useState<Verse | null>(null);
+    const [quizText, setQuizText] = useState<ReactNode | null>(null);
+    const [userInput, setUserInput] = useState("");
+    const [result, setResult] = useState<{ score: number, feedback: string } | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [showMnemonics, setShowMnemonics] = useState(false);
+    const [mnemonics, setMnemonics] = useState<string[]>([]);
+    const [practiceMode, setPracticeMode] = useState<'fill-in-the-blank' | 'first-letter'>('fill-in-the-blank');
+    const [explanation, setExplanation] = useState("");
+    const [showExplanation, setShowExplanation] = useState(false);
+    const [allDone, setAllDone] = useState(false);
+
+    const setupQuiz = useCallback((v: Verse, mode: 'fill-in-the-blank' | 'first-letter') => {
+        if (!v) return;
+        if (mode === 'fill-in-the-blank') {
+            const words = v.text.split(" ");
+            const blankIndices = new Set();
+            const numBlanks = Math.max(1, Math.floor(words.length * 0.25)); // ~25% blanks
+            while (blankIndices.size < numBlanks) {
+                blankIndices.add(Math.floor(Math.random() * words.length));
+            }
+            const quizWords = words.map((word, index) =>
+                blankIndices.has(index) ? <span key={index} style={styles.blank}>{word.replace(/[a-zA-Z]/g, '_')}</span> : ` ${word} `
+            );
+            setQuizText(<div>{quizWords}</div>);
+        } else { // first-letter mode
+            const firstLetters = v.text.split(" ").map(word => word.charAt(0)).join(" ");
+            setQuizText(<div style={{fontFamily: 'monospace'}}>{firstLetters}</div>)
+        }
+    }, []);
+    
+    const selectAndSetupVerse = useCallback(() => {
+        let versesToPractice = BIBLE_VERSES;
+        if (packId) {
+            const packVerses = THEME_PACKS.find(p => p.id === packId)?.verses || [];
+            versesToPractice = BIBLE_VERSES.filter(v => packVerses.includes(v.ref));
+        }
+        const today = new Date().toISOString().split('T')[0];
+        
+        const dueVerses = versesToPractice.filter(v => {
+            const p = state.progress[v.ref];
+            return p && p.nextReviewDate && p.nextReviewDate <= today;
+        }).sort((a, b) => (state.progress[a.ref]?.level || 0) - (state.progress[b.ref]?.level || 0));
+
+        const newVerses = versesToPractice.filter(v => !state.progress[v.ref]);
+
+        const nextVerse = dueVerses.length > 0 ? dueVerses[0] : (newVerses.length > 0 ? newVerses[0] : null);
+
+        if (nextVerse) {
+            setVerse(nextVerse);
+            setupQuiz(nextVerse, practiceMode);
+            setUserInput("");
+            setResult(null);
+            setShowMnemonics(false);
+            setMnemonics([]);
+            setShowExplanation(false);
+            setExplanation("");
+            setAllDone(false);
+        } else {
+            setAllDone(true);
+            setVerse(null);
+        }
+    }, [packId, state.progress, setupQuiz, practiceMode]);
+
+    useEffect(() => {
+        selectAndSetupVerse();
+    }, [selectAndSetupVerse]);
+
+    const handleNext = () => {
+        selectAndSetupVerse();
+    };
+
+    const handleSubmit = async () => {
+        if (!verse) return;
+        setIsSubmitting(true);
+        const res = await aiService.gradeAnswer(verse.text, quizText?.toString() || "", userInput, practiceMode);
+        setResult(res);
+        updateProgress(verse.ref, res);
+        updateStreak();
+        setIsSubmitting(false);
+    };
+
+    const toggleMnemonic = async () => {
+        if (showMnemonics) {
+            setShowMnemonics(false);
+            return;
+        }
+        if (!verse) return;
+        setIsLoading(true);
+        const res = await aiService.generateMnemonic(verse.text);
+        setMnemonics(res.mnemonics);
+        setShowMnemonics(true);
+        setIsLoading(false);
+    };
+
+    const toggleExplanation = async () => {
+        if(showExplanation) {
+            setShowExplanation(false);
+            return;
+        }
+        if (!verse) return;
+        setIsLoading(true);
+        const res = await aiService.explainVerse(verse.ref, verse.text);
+        setExplanation(res.explanation);
+        setShowExplanation(true);
+        setIsLoading(false);
+    }
+    
+    if (allDone) {
+        return (
+            <div className="screen" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', gap: '16px' }}>
+                <h2 style={{ fontSize: '24px', fontWeight: '700' }}>All Done for Today!</h2>
+                <p style={{ color: 'var(--text-muted)' }}>You've reviewed all your due verses. Great job! Come back tomorrow to continue building your habit.</p>
+                <button className="button button-primary" style={{marginTop: '20px'}} onClick={() => onNavigate('home')}>Go to Home</button>
+            </div>
+        );
+    }
+    
+    if (!verse) return <div>Loading...</div>;
+
+    return (
+        <div className="screen" style={{ display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <button onClick={() => onNavigate('home')} style={styles.backButton}>&larr; Home</button>
+                <div style={styles.practiceModeToggle}>
+                    <button onClick={() => setPracticeMode('fill-in-the-blank')} className={practiceMode === 'fill-in-the-blank' ? 'active' : ''}>Fill-in-the-Blank</button>
+                    <button onClick={() => setPracticeMode('first-letter')} className={practiceMode === 'first-letter' ? 'active' : ''}>First Letter</button>
                 </div>
+            </div>
+
+            <div style={{ flexGrow: 1 }}>
+                <h2 style={styles.verseRef}>{verse.ref}</h2>
+                <div style={styles.quizTextContainer}>{quizText}</div>
+
+                {practiceMode === 'fill-in-the-blank' ? (
+                    <input
+                        style={styles.textInput}
+                        type="text"
+                        value={userInput}
+                        onChange={e => setUserInput(e.target.value)}
+                        placeholder="Type the missing words..."
+                        disabled={!!result}
+                    />
+                ) : (
+                    <textarea
+                        style={{...styles.textInput, height: '100px'}}
+                        value={userInput}
+                        onChange={e => setUserInput(e.target.value)}
+                        placeholder="Type the full verse..."
+                        disabled={!!result}
+                    />
+                )}
+            </div>
+
+            <div style={{ marginTop: 'auto' }}>
+                {result && (
+                    <div style={{...styles.resultCard, backgroundColor: result.score > 80 ? 'var(--correct)' : 'var(--incorrect)'}}>
+                        <div style={styles.resultHeader}>
+                            <h3 style={styles.resultTitle}>{result.score > 80 ? "Well done!" : "Keep practicing!"}</h3>
+                            <span style={styles.resultScore}>{result.score}/100</span>
+                        </div>
+                        <p style={styles.resultFeedback}>{result.feedback}</p>
+                    </div>
+                )}
+                
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                     <button className="button button-secondary" style={{ flex: 1 }} onClick={toggleMnemonic} disabled={isLoading}>
+                        {isLoading && !showMnemonics ? '...' : (showMnemonics ? 'Hide Tip' : 'AI Tip')}
+                     </button>
+                     <button className="button button-secondary" style={{ flex: 1 }} onClick={toggleExplanation} disabled={isLoading}>
+                        {isLoading && !showExplanation ? '...' : (showExplanation ? 'Hide Explanation' : 'Explain')}
+                     </button>
+                </div>
+
+                {showMnemonics && (
+                    <div style={styles.aiMnemonicContainer}>
+                        {mnemonics.map((m, i) => (
+                           <div key={i} style={styles.aiTipBubble}>💡 {m}</div>
+                        ))}
+                    </div>
+                )}
+                {showExplanation && <div style={styles.aiTipBubble}>📖 {explanation}</div>}
+
+                {result ? (
+                    <button className="button button-primary" onClick={handleNext}>Next Verse &rarr;</button>
+                ) : (
+                    <button className="button button-primary" onClick={handleSubmit} disabled={isSubmitting || !userInput}>
+                        {isSubmitting ? "Checking..." : "Check Answer"}
+                    </button>
+                )}
             </div>
         </div>
     );
@@ -576,243 +838,412 @@ const ThemesScreen = () => {
 
 const ProgressScreen = () => {
     const { state } = useApp();
-    const [modalContent, setModalContent] = useState<any | null>(null);
     const masteredCount = Object.values(state.progress).filter(p => p.mastered).length;
-    const totalAttempts = Object.values(state.progress).reduce((sum, p) => sum + (p.attempts || 0), 0);
-    const unlockedRewards = Object.keys(REWARDS).filter(day => state.streak >= parseInt(day));
-
-    const handleRewardClick = (reward: typeof REWARDS[keyof typeof REWARDS]) => {
-        setModalContent(reward.content);
-    };
-
+    
     return (
         <div className="screen fade-in">
             <div className="screen-header">
-                <h1 className="screen-title">Progress</h1>
-                <StreakBadge />
+                <h1 className="screen-title">My Progress</h1>
             </div>
-            <div style={styles.statsGrid}>
-                <div style={styles.statCard}><span style={styles.statValue}>{masteredCount}</span><span style={styles.statLabel}>Mastered</span></div>
-                <div style={styles.statCard}><span style={styles.statValue}>{state.streak}</span><span style={styles.statLabel}>Current Streak</span></div>
-                <div style={styles.statCard}><span style={styles.statValue}>{totalAttempts}</span><span style={styles.statLabel}>Total Attempts</span></div>
-                <div style={styles.statCard}><span style={styles.statValue}>{state.longestStreak}</span><span style={styles.statLabel}>Longest Streak</span></div>
+            <div style={styles.progressSummaryCard}>
+                <ProgressBar value={masteredCount} max={BIBLE_VERSES.length} label="Mastered Verses" />
+                <div style={styles.streakInfoContainer}>
+                    <div>
+                        <div style={styles.streakStat}>{state.streak}</div>
+                        <div style={styles.streakLabel}>Current Streak</div>
+                    </div>
+                     <div>
+                        <div style={styles.streakStat}>{state.longestStreak}</div>
+                        <div style={styles.streakLabel}>Longest Streak</div>
+                    </div>
+                </div>
             </div>
             
-            <h2 style={{fontSize: '22px', marginTop: '32px', marginBottom: '16px'}}>Rewards</h2>
-            <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
-                {Object.entries(REWARDS).map(([day, reward]) => {
-                    const isUnlocked = unlockedRewards.includes(day);
+            <h2 style={{ fontSize: '20px', fontWeight: 600, margin: '24px 0 16px' }}>All Verses</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {BIBLE_VERSES.map(verse => {
+                    const p = state.progress[verse.ref];
                     return (
-                        <div key={reward.id} style={styles.rewardCard(isUnlocked)} onClick={() => isUnlocked && handleRewardClick(reward)}>
-                             <div style={styles.rewardIcon(isUnlocked)}>{isUnlocked ? '🏆' : '🔒'}</div>
-                            <div style={styles.rewardContent}>
-                                <h4 style={{ margin: 0 }}>{reward.title}</h4>
-                                <p style={{ fontSize: '14px', color: '#7f8c8d', margin: 0 }}>
-                                    {isUnlocked ? 'Unlocked! Click to view.' : `Reach a ${day}-day streak`}
-                                </p>
+                        <div key={verse.ref} style={styles.verseProgressCard}>
+                            <div>
+                                <div style={styles.verseProgressRef}>{verse.ref}</div>
+                                <div style={styles.verseProgressText}>{verse.text.substring(0, 50)}...</div>
                             </div>
-                            {isUnlocked && <div style={styles.rewardLock}>›</div>}
+                            <div style={{ textAlign: 'right' }}>
+                                {p?.mastered ? <span style={styles.masteredBadge}>MASTERED</span> : 
+                                 p ? <span style={styles.srsLevelBadge}>LEVEL {p.level}</span> :
+                                 <span style={styles.accuracyBadge} >NEW</span>}
+                            </div>
                         </div>
-                    );
+                    )
                 })}
             </div>
-             <Modal show={!!modalContent} onClose={() => setModalContent(null)} title={modalContent?.title}>
-                {modalContent?.type === 'pdf' && (
-                    <div>
-                        <p style={{whiteSpace: 'pre-wrap', lineHeight: 1.6}}>{modalContent.text}</p>
-                    </div>
-                )}
-                {modalContent?.type === 'audio' && (
-                    <div style={{textAlign: 'center'}}>
-                        <p style={{marginBottom: '20px'}}>Listen to this guided prayer for encouragement.</p>
-                        <button className="button button-primary">▶️ Play Prayer</button>
-                    </div>
-                )}
-                {modalContent?.type === 'wallpaper' && (
-                    <div style={{textAlign: 'center'}}>
-                        <p style={{marginBottom: '20px'}}>Download a beautiful wallpaper for your phone.</p>
-                        <div style={{width: '150px', height: '266px', backgroundColor: 'var(--primary-blue)', color: 'white', margin: '0 auto', borderRadius: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '10px', textAlign: 'center'}}>
-                            "I can do all things through Christ who strengthens me."<br/>- Phil 4:13
-                        </div>
-                        <button className="button button-primary" style={{marginTop: '20px'}}>Download</button>
-                    </div>
-                )}
-            </Modal>
         </div>
     );
 };
 
-const SettingsScreen = ({ setPage }: { setPage: (page: string) => void }) => {
-    const { state, setState } = useApp();
-    const [showProModal, setShowProModal] = useState(false);
+const StatisticsScreen = () => {
+    const { state } = useApp();
+    
+    // Calculate stats
+    const masteredCount = Object.values(state.progress).filter(p => p.mastered).length;
+    const overallAccuracy = state.practiceHistory.length > 0
+        ? Math.round(state.practiceHistory.reduce((acc, cur) => acc + cur.score, 0) / state.practiceHistory.length)
+        : 0;
 
-    const handleSettingChange = (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
-        const { name, value } = e.target;
-        setState(s => ({ ...s, settings: { ...s.settings, [name]: value } }));
+    // Weekly Mastery Data
+    const getWeeklyMasteryData = () => {
+        const weeklyData: Record<string, number> = {};
+        Object.values(state.progress).forEach(p => {
+            if (p.mastered && p.masteredDate) {
+                const date = new Date(p.masteredDate);
+                const weekStart = new Date(date.setDate(date.getDate() - date.getDay()));
+                const weekKey = weekStart.toISOString().split('T')[0];
+                weeklyData[weekKey] = (weeklyData[weekKey] || 0) + 1;
+            }
+        });
+        return Object.entries(weeklyData)
+            .sort(([keyA], [keyB]) => new Date(keyA).getTime() - new Date(keyB).getTime())
+            .slice(-5) // Last 5 weeks
+            .map(([date, count]) => ({
+                label: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                value: count
+            }));
     };
     
-    const handleDeleteData = () => {
-        if(confirm("Are you sure you want to delete all your progress data? This cannot be undone.")) {
-            localStorage.removeItem('smc_state');
-            window.location.reload();
-        }
-    }
+    const weeklyMasteryData = getWeeklyMasteryData();
 
+    // Accuracy Trend Data
+    const accuracyTrendData = state.practiceHistory.slice(-15).map(p => p.score);
+
+    const handleShare = () => {
+        const shareText = `I've mastered ${masteredCount} verses with an overall accuracy of ${overallAccuracy}% and a ${state.longestStreak}-day streak on Dwell! 🙏`;
+        if (navigator.share) {
+            navigator.share({
+                title: 'My Scripture Memory Progress',
+                text: shareText,
+            }).catch(console.error);
+        } else {
+            // Fallback for browsers that don't support Web Share API
+            navigator.clipboard.writeText(shareText);
+            alert('Progress copied to clipboard!');
+        }
+    };
+    
+    // Chart components
+    const BarChart = ({ data, title }: { data: {label: string, value: number}[], title: string }) => {
+        const maxValue = Math.max(...data.map(d => d.value), 1);
+        return (
+            <div style={styles.chartContainer}>
+                <h3 style={styles.chartTitle}>{title}</h3>
+                <div style={styles.barChart}>
+                    {data.map((d, i) => (
+                        <div key={i} style={styles.barWrapper}>
+                            <div style={styles.barValue}>{d.value}</div>
+                            <div style={{...styles.bar, height: `${(d.value / maxValue) * 100}%`}}></div>
+                            <div style={styles.barLabel}>{d.label}</div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        );
+    };
+
+    const LineChart = ({ data, title }: { data: number[], title: string }) => {
+        const maxValue = 100;
+        const points = data.map((d, i) => `${(i / (data.length - 1)) * 100},${100 - (d / maxValue) * 100}`).join(' ');
+
+        return (
+            <div style={styles.chartContainer}>
+                 <h3 style={styles.chartTitle}>{title}</h3>
+                 {data.length > 1 ? (
+                    <svg viewBox="0 0 100 100" style={styles.lineChart}>
+                        <polyline fill="none" stroke="var(--primary-green)" strokeWidth="2" points={points}/>
+                    </svg>
+                 ) : <p style={{textAlign: 'center', color: 'var(--text-muted)'}}>Practice more to see your trend!</p>}
+            </div>
+        );
+    }
+    
+    return (
+        <div className="screen fade-in">
+            <div className="screen-header">
+                <h1 className="screen-title">Statistics</h1>
+            </div>
+            
+            <div style={styles.statsGrid}>
+                <div style={styles.statCard}>
+                    <div style={styles.statValue}>{masteredCount}</div>
+                    <div style={styles.statLabel}>Verses Mastered</div>
+                </div>
+                 <div style={styles.statCard}>
+                    <div style={styles.statValue}>{overallAccuracy}%</div>
+                    <div style={styles.statLabel}>Overall Accuracy</div>
+                </div>
+                 <div style={styles.statCard}>
+                    <div style={styles.statValue}>{state.longestStreak}</div>
+                    <div style={styles.statLabel}>Longest Streak</div>
+                </div>
+            </div>
+
+            <BarChart data={weeklyMasteryData} title="Weekly Mastery" />
+            <LineChart data={accuracyTrendData} title="Accuracy Trend (Last 15 sessions)" />
+
+            <div style={{marginTop: '24px'}}>
+                <button className="button button-secondary" onClick={handleShare}>Share My Progress</button>
+            </div>
+        </div>
+    );
+};
+
+
+const SettingsScreen = () => {
+    const { state, setState, logout } = useApp();
+    
+    const handleSettingChange = (key: string, value: any) => {
+        setState(s => ({
+            ...s,
+            settings: { ...s.settings, [key]: value }
+        }));
+    };
+    
     return (
         <div className="screen fade-in">
             <div className="screen-header">
                 <h1 className="screen-title">Settings</h1>
             </div>
 
-            <div style={styles.settingRow}>
-                <label htmlFor="translation" style={styles.settingLabel}>Bible Translation</label>
-                <select id="translation" name="translation" value={state.settings.translation} onChange={handleSettingChange} style={styles.select}>
-                    <option value="KJV">KJV (King James Version)</option>
-                    <option value="ESV" disabled>ESV (Pro)</option>
-                    <option value="NIV" disabled>NIV (Pro)</option>
-                </select>
-            </div>
-            
-            <div style={styles.settingRow}>
-                <label htmlFor="reminderTime" style={styles.settingLabel}>Daily Reminder</label>
-                <input type="time" id="reminderTime" name="reminderTime" value={state.settings.reminderTime} onChange={handleSettingChange} style={styles.input} />
+            <div style={styles.settingsGroup}>
+                <div style={styles.settingItem}>
+                    <label htmlFor="translation" style={styles.settingLabel}>Bible Translation</label>
+                    <select id="translation" style={styles.selectInput} value={state.settings.translation} onChange={e => handleSettingChange('translation', e.target.value)}>
+                        <option>KJV</option>
+                        <option>NIV</option>
+                        <option>ESV</option>
+                    </select>
+                </div>
+                <div style={styles.settingItem}>
+                    <label htmlFor="reminder" style={styles.settingLabel}>Daily Reminder</label>
+                    <input id="reminder" type="time" style={styles.timeInput} value={state.settings.reminderTime} onChange={e => handleSettingChange('reminderTime', e.target.value)} />
+                </div>
+                 <div style={styles.settingItem}>
+                    <label style={styles.settingLabel}>Dark Mode</label>
+                    <label className="switch">
+                        <input type="checkbox" checked={state.settings.darkMode} onChange={e => handleSettingChange('darkMode', e.target.checked)} />
+                        <span className="slider round"></span>
+                    </label>
+                </div>
             </div>
 
-            <div style={styles.upgradeCard} onClick={() => setShowProModal(true)}>
-                <h3>⭐ Upgrade to Pro</h3>
-                <p>Unlock all features and support our ministry.</p>
+            <div style={styles.proCard}>
+                <h3 style={styles.proTitle}>Upgrade to Pro</h3>
+                <p style={styles.proText}>Unlock all theme packs, unlimited practice sessions, and more features!</p>
+                <button className="button button-primary" style={{ backgroundColor: 'var(--accent-blue)', borderBottomColor: '#1a95d4' }} onClick={() => setState(s => ({...s, isPro: !s.isPro}))}>
+                   {state.isPro ? 'Pro Enabled' : 'Upgrade Now'}
+                </button>
             </div>
 
-            <div style={{marginTop: '40px', display: 'flex', flexDirection: 'column', gap: '16px'}}>
-                <button onClick={handleDeleteData} className="button" style={{backgroundColor: '#e74c3c', color: 'white'}}>Delete All Data</button>
+            <div style={{ marginTop: '24px' }}>
+                <button className="button button-secondary" onClick={logout}>Sign Out</button>
             </div>
-            
-            <Modal show={showProModal} onClose={() => setShowProModal(false)} title="Go Pro">
-                <ul style={{listStyle: 'none', paddingLeft: 0, marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '12px'}}>
-                    <li>✅ Unlimited verse sessions</li>
-                    <li>✅ Unlock all theme packs</li>
-                    <li>✅ Create custom packs</li>
-                    <li>✅ ESV & NIV Translations</li>
-                    <li>✅ Download audio recitations</li>
-                    <li>✅ Ad-free experience</li>
-                </ul>
-                <button className="button button-primary" onClick={() => { setState(s => ({ ...s, isPro: true })); setShowProModal(false); }}>
-                    Upgrade Now ($4.99/mo)
-                </button>
-                 <button className="button button-secondary" style={{marginTop: '10px'}} onClick={() => { setShowProModal(false); alert("Purchase restored!"); }}>
-                    Restore Purchase
-                </button>
-            </Modal>
         </div>
     );
 };
 
 
+const BottomNav = ({ currentScreen, onNavigate }: { currentScreen: string, onNavigate: (screen: string) => void }) => {
+    const navItems = [
+        { name: 'home', icon: 'home' },
+        { name: 'practice', icon: 'practice' },
+        { name: 'progress', icon: 'progress' },
+        { name: 'stats', icon: 'stats' },
+        { name: 'settings', icon: 'settings' }
+    ];
+
+    return (
+        <nav className="bottom-nav">
+            {navItems.map(item => (
+                <div 
+                    key={item.name} 
+                    className={`nav-item ${currentScreen === item.name ? 'active' : ''}`}
+                    onClick={() => onNavigate(item.name)}
+                >
+                    <Icon name={item.icon} />
+                    <span>{item.name}</span>
+                </div>
+            ))}
+        </nav>
+    );
+};
+
 const App = () => {
-    const [page, setPage] = useState('Home');
-    const [currentVerse, setCurrentVerse] = useState(BIBLE_VERSES[0]);
+    const { state } = useApp();
+    const [currentScreen, setCurrentScreen] = useState('home');
+    const [screenParams, setScreenParams] = useState<any>({});
+    const [modal, setModal] = useState<{show: boolean, title: string, content: ReactNode}>({show: false, title: "", content: null});
+
+    const handleNavigate = (screen: string, params: any = {}) => {
+        setCurrentScreen(screen);
+        setScreenParams(params);
+    };
+
+    useEffect(() => {
+        const checkReward = () => {
+            const reward = REWARDS[state.streak];
+            if (reward) {
+                const rewardKey = `smc_reward_${reward.id}`;
+                if (!localStorage.getItem(rewardKey)) {
+                    setModal({
+                        show: true, 
+                        title: `🎉 Reward Unlocked! 🎉`,
+                        // FIX: Cast reward.content to the new type to satisfy the Modal component.
+                        content: <RewardModalContent content={reward.content as RewardContent} />
+                    });
+                    localStorage.setItem(rewardKey, 'true');
+                }
+            }
+        };
+        if(state.isAuthenticated) {
+            checkReward();
+        }
+    }, [state.streak, state.isAuthenticated]);
+
+    const RewardModalContent = ({ content }: { content: RewardContent }) => (
+        <div style={styles.rewardModalContent}>
+            <h4>{content.title}</h4>
+            {content.text && <p style={{marginTop: '8px', color: 'var(--text-muted)'}}>{content.text}</p>}
+        </div>
+    );
     
-    const handleSetVerse = (verse: Verse) => {
-        setCurrentVerse(verse);
-    }
-    
-    const renderPage = () => {
-        switch(page) {
-            case 'Home':
-                return <HomeScreen setPage={setPage} setVerse={handleSetVerse} />;
-            case 'Practice':
-                return <PracticeScreen verse={currentVerse} setPage={setPage} setVerse={handleSetVerse} />;
-            case 'Themes':
-                return <ThemesScreen />;
-            case 'Progress':
+    const renderScreen = () => {
+        switch (currentScreen) {
+            case 'practice':
+                return <PracticeScreen onNavigate={handleNavigate} {...screenParams} />;
+            case 'progress':
                 return <ProgressScreen />;
-            case 'Settings':
-                return <SettingsScreen setPage={setPage}/>;
+            case 'stats':
+                return <StatisticsScreen />;
+            case 'settings':
+                return <SettingsScreen />;
             default:
-                return <HomeScreen setPage={setPage} setVerse={handleSetVerse} />;
+                return <HomeScreen onNavigate={handleNavigate} />;
         }
     };
+    
+    if (!state.isAuthenticated) {
+        return (
+            <div className="app-container">
+                <AuthScreen />
+            </div>
+        );
+    }
 
     return (
         <div className="app-container">
-            {renderPage()}
-            <BottomNav currentPage={page} setPage={setPage} />
+            <Modal show={modal.show} onClose={() => setModal({show: false, title: "", content: null})} title={modal.title}>
+                {modal.content}
+            </Modal>
+            {renderScreen()}
+            <BottomNav currentScreen={currentScreen} onNavigate={handleNavigate} />
         </div>
     );
-}
+};
 
-// --- STYLES ---
-// FIX: Cast specific CSS properties to be compatible with React.CSSProperties, fixing type errors.
-const styles: { [key: string]: CSSProperties | ((...args: any[]) => CSSProperties) } = {
+const styles: Record<string, CSSProperties> = {
+    // Component-specific styles
+    themePackCard: { display: 'flex', alignItems: 'center', backgroundColor: 'var(--card-bg)', padding: '16px', borderRadius: '12px', border: '2px solid var(--border-color)', cursor: 'pointer', transition: 'transform 0.2s', position: 'relative' },
+    themePackTitle: { fontWeight: 600, color: 'var(--text-dark)' },
+    themePackVerseCount: { color: 'var(--text-muted)', fontSize: '14px' },
+    proBadge: { position: 'absolute', top: '12px', right: '12px', backgroundColor: 'var(--accent-blue)', color: 'white', padding: '2px 8px', borderRadius: '8px', fontSize: '10px', fontWeight: 700 },
+    backButton: { background: 'none', border: 'none', color: 'var(--accent-blue)', fontSize: '16px', cursor: 'pointer', fontWeight: 600 },
+    practiceModeToggle: { display: 'flex', backgroundColor: 'var(--background)', borderRadius: '8px', padding: '4px' },
+    verseRef: { fontSize: '24px', fontWeight: 700, textAlign: 'center', marginBottom: '16px', color: 'var(--text-dark)' },
+    quizTextContainer: { fontSize: '18px', lineHeight: 1.6, color: 'var(--text-muted)', marginBottom: '24px', padding: '16px', backgroundColor: 'var(--background)', borderRadius: '8px', minHeight: '100px' },
+    blank: { color: 'var(--accent-blue)', fontWeight: 600, letterSpacing: '2px', margin: '0 4px', display: 'inline-block' },
+    textInput: { width: '100%', padding: '16px', fontSize: '16px', borderRadius: '12px', border: '2px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-dark)', marginBottom: '24px' },
+    resultCard: { padding: '16px', borderRadius: '12px', marginBottom: '16px', color: 'white' },
+    resultHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' },
+    resultTitle: { fontSize: '18px', fontWeight: 700 },
+    resultScore: { fontSize: '16px', fontWeight: 600 },
+    resultFeedback: { fontSize: '14px', opacity: 0.9 },
+    aiMnemonicContainer: { display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' },
+    aiTipBubble: { backgroundColor: 'var(--chat-bubble-user-bg)', padding: '12px', borderRadius: '12px', fontSize: '14px', color: 'var(--text-dark)' },
+    progressSummaryCard: { backgroundColor: 'var(--card-bg)', padding: '24px', borderRadius: '16px', border: '2px solid var(--border-color)' },
+    progressBarContainer: { marginBottom: '20px' },
+    progressBarLabel: { display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', fontWeight: 600, color: 'var(--text-muted)' },
+    progressBarTrack: { height: '10px', backgroundColor: 'var(--border-color)', borderRadius: '5px', overflow: 'hidden' },
+    progressBarFill: { height: '100%', backgroundColor: 'var(--primary-green)', borderRadius: '5px' },
+    streakInfoContainer: { display: 'flex', justifyContent: 'space-around', textAlign: 'center', paddingTop: '20px', borderTop: '1px solid var(--border-color)' },
+    streakStat: { fontSize: '28px', fontWeight: 700, color: 'var(--accent-blue)' },
+    streakLabel: { fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase' },
+    verseProgressCard: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: 'var(--background)', borderRadius: '8px' },
+    verseProgressRef: { fontWeight: 600, color: 'var(--text-dark)' },
+    verseProgressText: { fontSize: '14px', color: 'var(--text-muted)' },
+    masteredBadge: { backgroundColor: 'var(--primary-green)', color: 'white', padding: '4px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 700 },
+    srsLevelBadge: { backgroundColor: 'var(--accent-blue)', color: 'white', padding: '4px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 700 },
+    accuracyBadge: { backgroundColor: 'var(--border-color)', color: 'var(--text-muted)', padding: '4px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 700 },
+    settingsGroup: { marginBottom: '24px', backgroundColor: 'var(--card-bg)', borderRadius: '12px', border: '1px solid var(--border-color)', overflow: 'hidden' },
+    settingItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', borderBottom: '1px solid var(--border-color)' },
+    settingLabel: { fontWeight: 600, color: 'var(--text-dark)' },
+    selectInput: { padding: '8px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--background)', color: 'var(--text-dark)' },
+    timeInput: { padding: '8px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--background)', color: 'var(--text-dark)' },
+    proCard: { backgroundColor: 'var(--accent-blue)', color: 'white', padding: '24px', borderRadius: '16px', textAlign: 'center' },
+    proTitle: { fontSize: '22px', fontWeight: 700, marginBottom: '8px' },
+    proText: { marginBottom: '16px', opacity: 0.9 },
     modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 },
     modalContent: { backgroundColor: 'var(--card-bg)', padding: '24px', borderRadius: '16px', width: '90%', maxWidth: '400px', boxShadow: '0 5px 15px rgba(0,0,0,0.3)' },
     modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' },
-    modalCloseButton: { background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: '#7f8c8d' },
-    modalBody: {},
-    practiceVerseCard: { padding: '20px', backgroundColor: 'var(--card-bg)', borderRadius: '12px', marginBottom: '16px', textAlign: 'center', border: '1px solid var(--border-color)' },
-    audioButton: { display: 'inline-flex', alignItems: 'center', background: 'none', border: '1px solid var(--border-color)', borderRadius: '20px', padding: '8px 16px', cursor: 'pointer', color: 'var(--text-dark)' },
-    chatBubbleUser: { alignSelf: 'flex-start', backgroundColor: 'var(--card-bg)', padding: '16px', borderRadius: '20px 20px 20px 5px', marginBottom: '12px', maxWidth: '90%', border: '1px solid var(--border-color)' },
-    chatBubbleAI: (isCorrect) => ({
-        alignSelf: 'flex-start',
-        backgroundColor: isCorrect ? '#e8f8f5' : '#fdedec',
-        color: isCorrect ? '#1d8348' : '#a93226',
-        padding: '16px',
-        borderRadius: '20px 20px 20px 5px',
-        marginBottom: '12px',
-        maxWidth: '90%',
-        border: `1px solid ${isCorrect ? 'var(--correct)' : 'var(--incorrect)'}`
-    }),
-    inputArea: { display: 'flex', padding: '10px 0', backgroundColor: 'var(--warm-cream)' },
-    chatInput: { flex: 1, border: '1px solid var(--border-color)', padding: '12px 16px', borderRadius: '20px', backgroundColor: 'var(--card-bg)', fontSize: '16px', outline: 'none' },
-    sendButton: { border: 'none', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', marginLeft: '10px', flexShrink: 0 },
-    themeCard: (isLocked) => ({
-        display: 'flex',
-        alignItems: 'center',
-        padding: '20px',
-        backgroundColor: 'var(--card-bg)',
-        borderRadius: '12px',
-        border: '1px solid var(--border-color)',
-        opacity: isLocked ? 0.6 : 1,
-        cursor: 'pointer'
-    }),
-    progressBarContainer: { height: '8px', backgroundColor: 'var(--border-color)', borderRadius: '4px', marginTop: '12px', overflow: 'hidden' },
-    progressBar: (percentage) => ({ width: `${percentage * 100}%`, height: '100%', backgroundColor: 'var(--gold-accent)', borderRadius: '4px', transition: 'width 0.5s' }),
-    themeButton: (isLocked) => ({
-        padding: '10px 20px',
-        border: `2px solid ${isLocked ? 'var(--gold-accent)' : 'var(--primary-blue)'}`,
-        color: isLocked ? 'var(--gold-accent)' : 'var(--primary-blue)',
-        backgroundColor: 'transparent',
-        borderRadius: '20px',
-        fontWeight: 600,
-        pointerEvents: 'none'
-    }),
-    statsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' },
-    statCard: { backgroundColor: 'var(--card-bg)', padding: '20px', borderRadius: '12px', textAlign: 'center', border: '1px solid var(--border-color)' },
-    statValue: { display: 'block', fontSize: '24px', fontWeight: 700 },
-    statLabel: { fontSize: '14px', color: '#7f8c8d' },
-    rewardCard: (isUnlocked) => ({
-        display: 'flex',
-        alignItems: 'center',
-        padding: '16px',
-        backgroundColor: isUnlocked ? '#FEF9E7' : 'var(--card-bg)',
-        borderRadius: '12px',
-        border: `1px solid ${isUnlocked ? 'var(--gold-accent)' : 'var(--border-color)'}`,
-        cursor: isUnlocked ? 'pointer' : 'default',
-        opacity: isUnlocked ? 1 : 0.7,
-    }),
-    rewardIcon: (isUnlocked) => ({ fontSize: '24px', marginRight: '16px', color: isUnlocked ? 'var(--gold-accent)' : '#7f8c8d' }),
-    rewardContent: { flex: 1 },
-    rewardLock: { fontSize: '24px', color: '#7f8c8d' },
-    settingRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 0', borderBottom: '1px solid var(--border-color)' },
-    settingLabel: { fontSize: '16px' },
-    select: { fontSize: '16px', padding: '8px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)' },
-    input: { fontSize: '16px', padding: '8px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)' },
-    upgradeCard: { background: 'linear-gradient(45deg, var(--primary-blue), #5dadec)', color: 'white', padding: '20px', borderRadius: '12px', marginTop: '24px', cursor: 'pointer', textAlign: 'center' },
+    modalTitle: { fontWeight: 700, fontSize: '20px' },
+    modalCloseButton: { background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', color: 'var(--text-muted)' },
+    modalBody: { },
+    rewardModalContent: { backgroundColor: 'var(--reward-unlocked-bg)', padding: '16px', borderRadius: '12px', textAlign: 'center' },
+    // Stats Screen Styles
+    statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' },
+    statCard: { backgroundColor: 'var(--background)', padding: '16px', borderRadius: '12px', textAlign: 'center' },
+    statValue: { fontSize: '24px', fontWeight: 700, color: 'var(--accent-blue)' },
+    statLabel: { fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 },
+    chartContainer: { backgroundColor: 'var(--background)', padding: '16px', borderRadius: '12px', marginBottom: '16px' },
+    chartTitle: { fontSize: '16px', fontWeight: 600, color: 'var(--text-dark)', marginBottom: '16px' },
+    barChart: { display: 'flex', justifyContent: 'space-around', alignItems: 'flex-end', height: '150px' },
+    barWrapper: { display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 },
+    bar: { width: '60%', backgroundColor: 'var(--accent-blue)', borderRadius: '4px 4px 0 0', transition: 'height 0.5s ease-out' },
+    barValue: { fontSize: '12px', fontWeight: 600, color: 'var(--text-dark)', marginBottom: '4px' },
+    barLabel: { fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', whiteSpace: 'nowrap' },
+    lineChart: { width: '100%', height: '150px' },
+    // Auth Styles
+    authContainer: { display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100%', paddingBottom: '24px' },
+    authContent: { width: '100%', maxWidth: '320px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' },
+    welcomeTitle: { fontSize: '48px', fontWeight: 700, color: 'var(--primary-green)' },
+    welcomeSubtitle: { fontSize: '18px', color: 'var(--text-muted)', marginTop: '8px' },
+    guestButton: { background: 'none', border: 'none', color: 'var(--text-muted)', marginTop: '16px', fontWeight: 600, cursor: 'pointer', fontSize: '16px' },
+    authTitle: { fontSize: '28px', fontWeight: 700, marginBottom: '24px' },
+    authForm: { width: '100%', display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' },
+    authInput: { width: '100%', padding: '16px', fontSize: '16px', borderRadius: '12px', border: '2px solid var(--border-color)', backgroundColor: 'var(--card-bg)', color: 'var(--text-dark)' },
+    authSwitchText: { color: 'var(--text-muted)' },
+    authSwitchLink: { color: 'var(--accent-blue)', fontWeight: 600, cursor: 'pointer' },
 };
 
+// Add active styles for practice mode toggle
+const styleSheet = document.createElement("style");
+styleSheet.innerText = `
+    .practice-mode-toggle button {
+        padding: 8px 12px;
+        border: none;
+        background-color: transparent;
+        color: var(--text-muted);
+        font-weight: 600;
+        cursor: pointer;
+        border-radius: 6px;
+    }
+    .practice-mode-toggle button.active {
+        background-color: var(--card-bg);
+        color: var(--primary-green);
+    }
+`;
+document.head.appendChild(styleSheet);
 
-// --- RENDER APP ---
-const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+
+const root = ReactDOM.createRoot(document.getElementById('root')!);
 root.render(
     <React.StrictMode>
         <AppProvider>
